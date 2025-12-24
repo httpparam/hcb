@@ -11,7 +11,7 @@ services:
       - redis-data:/data
   web:
     env_file:
-      - .env.development
+      - .env
     build: ./
     command: bash -c 'rm -f /usr/src/app/tmp/pids/server.pid; ./bin/dev'
     volumes:
