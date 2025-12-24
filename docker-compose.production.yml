@@ -1,6 +1,45 @@
+# docker-compose.production.yml
+# Complete production setup with database, redis, web, and jobs services
 services:
+  db:
+    image: "postgres:15.13"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: rails
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: hcb_production
+      POSTGRES_HOST_AUTH_METHOD: md5
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rails"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
   web:
-    image: ghcr.io/hackclub/hcb
     build:
       context: .
       dockerfile: production.Dockerfile
@@ -8,24 +47,63 @@ services:
       - "3000"
     ports:
       - "80:3000"
+    environment:
+      RAILS_ENV: production
+      RACK_ENV: production
+      NODE_ENV: production
+      DATABASE_URL: postgres://rails:${POSTGRES_PASSWORD}@db:5432/hcb_production
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      REDIS_CACHE_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      RAILS_MASTER_KEY: ${RAILS_MASTER_KEY}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      PORT: 3000
+      RAILS_MAX_THREADS: 5
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: "curl -s -X GET -f http://localhost:3000/up > /dev/null || wget -q -O- http://localhost:3000/up > /dev/null || exit 1"
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
     deploy:
       resources:
         limits:
-          cpus: 3
-          memory: 5g
+          cpus: '3'
+          memory: 5G
+
   jobs:
-    image: ghcr.io/hackclub/hcb
-    depends_on: [ web ] # Wait for web to build docker image
-    environment:
-      RAILS_MAX_THREADS: 4 # 4 threads x 3 workers = 12 threads
+    build:
+      context: .
+      dockerfile: production.Dockerfile
     command: bundle exec sidekiq
+    environment:
+      RAILS_ENV: production
+      RACK_ENV: production
+      NODE_ENV: production
+      DATABASE_URL: postgres://rails:${POSTGRES_PASSWORD}@db:5432/hcb_production
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      REDIS_CACHE_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      RAILS_MASTER_KEY: ${RAILS_MASTER_KEY}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      RAILS_MAX_THREADS: 10
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
+    restart: unless-stopped
     deploy:
       resources:
         limits:
-          cpus: 2
-          memory: 2g
+          cpus: '2'
+          memory: 2G
+
+volumes:
+  pg-data:
+  redis-data:
