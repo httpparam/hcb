@@ -97,6 +97,12 @@ FROM base
 # Add build timestamp
 RUN date +%s > .build-timestamp
 
+# Copy Node.js and Yarn from build stage for runtime yarn install
+ARG NODE_VERSION=22.10.0
+ARG YARN_VERSION=1.22
+COPY --from=build /usr/local/node /usr/local/node
+ENV PATH=/usr/local/node/bin:$PATH
+
 # Run and own only the runtime files as a non-root user for security
 RUN groupadd --system --gid 1000 rails && \
     useradd rails --uid 1000 --gid 1000 --create-home --shell /bin/bash

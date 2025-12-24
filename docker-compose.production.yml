@@ -1,31 +1,104 @@
 services:
+  # PostgreSQL Database
+  db:
+    image: postgres:14
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: hcb_production
+      POSTGRES_USER: ${POSTGRES_USER:-hcb_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hcb_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for Sidekiq and caching
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Rails Web Application
   web:
-    image: ghcr.io/hackclub/hcb
     build:
       context: .
       dockerfile: production.Dockerfile
     expose:
       - "3000"
     ports:
-      - "80:3000"
-    healthcheck:
-      test: "curl -s -X GET -f http://localhost:3000/up > /dev/null || wget -q -O- http://localhost:3000/up > /dev/null || exit 1"
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    deploy:
-      resources:
-        limits:
-          cpus: 3
-          memory: 5g
-  jobs:
-    image: ghcr.io/hackclub/hcb
-    depends_on: [ web ] # Wait for web to build docker image
+      - "${PORT:-3000}:3000"
     environment:
-      RAILS_MAX_THREADS: 4 # 4 threads x 3 workers = 12 threads
+      RAILS_ENV: production
+      RACK_ENV: production
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hcb_user}:${POSTGRES_PASSWORD}@db:5432/hcb_production
+      REDIS_URL: redis://redis:6379/0
+      REDIS_CACHE_URL: redis://redis:6379/1
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      LIVE_URL_HOST: ${LIVE_URL_HOST}
+      RAILS_LOG_TO_STDOUT: "true"
+      RAILS_LOG_LEVEL: ${RAILS_LOG_LEVEL:-info}
+      RAILS_SERVE_STATIC_FILES: "true"
+      RAILS_ASSUME_SSL: ${RAILS_ASSUME_SSL:-false}
+      PORT: 3000
+      RAILS_MAX_THREADS: ${RAILS_MAX_THREADS:-5}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      DOPPLER_TOKEN: ${DOPPLER_TOKEN:-}
+      DOPPLER_PROJECT: ${DOPPLER_PROJECT:-}
+      DOPPLER_CONFIG: ${DOPPLER_CONFIG:-production}
+    command: sh -c "yarn install --frozen-lockfile && ./bin/rails server"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: "curl -f http://localhost:3000/up || exit 1"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # Sidekiq Background Jobs Worker
+  jobs:
+    build:
+      context: .
+      dockerfile: production.Dockerfile
+    environment:
+      RAILS_ENV: production
+      RACK_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hcb_user}:${POSTGRES_PASSWORD}@db:5432/hcb_production
+      REDIS_URL: redis://redis:6379/0
+      REDIS_CACHE_URL: redis://redis:6379/1
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      LIVE_URL_HOST: ${LIVE_URL_HOST}
+      RAILS_LOG_TO_STDOUT: "true"
+      RAILS_LOG_LEVEL: ${RAILS_LOG_LEVEL:-info}
+      RAILS_MAX_THREADS: ${SIDEKIQ_THREADS:-4}
+      SIDEKIQ_THROTTLED_QUEUE_CONCURRENCY: ${SIDEKIQ_THROTTLED_QUEUE_CONCURRENCY:-5}
+      DOPPLER_TOKEN: ${DOPPLER_TOKEN:-}
+      DOPPLER_PROJECT: ${DOPPLER_PROJECT:-}
+      DOPPLER_CONFIG: ${DOPPLER_CONFIG:-production}
     command: bundle exec sidekiq
-    deploy:
-      resources:
-        limits:
-          cpus: 2
-          memory: 2g
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
